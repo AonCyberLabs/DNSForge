@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "dnsforge"
+version = "0.2.0"
+description = "DNS Response Forging Tool"
+authors = ["Apurva Goenka <apurva.goenka2@aon.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+scapy = "^2.5.0"
+termcolor = "^2.4.0"
+netifaces = "^0.11.0"
+
+[tool.poetry.scripts]
+dnsforge = "dnsforge.__main__:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
