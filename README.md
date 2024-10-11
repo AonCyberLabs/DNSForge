@@ -1,5 +1,5 @@
 # DNSForge
-DNSForge is a network pentesting tool that aims to forge DNS responses as if they were originating from the authoritative nameserver. This tool is intended to be used alongside [Responder](https://github.com/lgandx/Responder).
+DNSForge is a network pentesting tool that forges DNS responses as if they were originating from the authoritative nameserver. This tool is intended to be used alongside [Responder](https://github.com/lgandx/Responder). The original blog post for DNSForge can be found [here](https://aon.com/cyberlabs/dnsforge)
 
 ## Attack Scenario
 This tool lends itself in the context of an internal network that consists of Windows workstations and servers. DNSForge utilizes ARP spoofing to redirect DNS requests intended for the authoritative nameserver to the attacker's host. Upon receiving DNS requests, DNSForge poisons the response with the attacker's IP address and, in stealth mode configuration, forges the authoritative nameserver's SOA record. This induces victims to accept DNS responses from a seemingly legitimate source and performs an adversary-in-the-middle attack.
@@ -26,7 +26,7 @@ poetry shell
 |______.'|_____|\____| \______.'|_____|  '.__.' [___]   .',__`  '.__.'
                                                        ( ( __))
 Author : Apurva Goenka
-Version : 0.2.0
+Version : 0.2.1
 
 usage: dnsforge [-h] -i INTERFACE -p POISON_IP [-ttl TIME_TO_LIVE] [-q QUERY_NAME] [-s] [-v]
                 [-ds DNS_SERVER] [-d DOMAIN] (-t TARGET | -tf TARGET_FILE | --no-arp-spoof)
@@ -42,7 +42,7 @@ options:
   -ttl TIME_TO_LIVE, --time-to-live TIME_TO_LIVE
                         TTL (seconds) for poisoned DNS response
   -q QUERY_NAME, --query-name QUERY_NAME
-                        DNS Query Name to Poison
+                        DNS Query Name to Poison (can specify multiple by separating with ',')
   -s, --stealth         Stealth Mode
   -v, --verbose         Verbose Output
 
@@ -65,6 +65,13 @@ This option requests the SOA record from the authoritative DNS server and append
 
 ## ARP Spoofing
 The tool can be supplied either a target IP with `-t`, a file with target IPs with `-tf` or the `--no-arp-spoof` flag that turns off ARP spoofing and lets the user decide the method of redirecting DNS packets to the attacker's host. At least one of these options must be supplied.
+
+### Spoofing Gateway
+In scenarios where the authoritative nameserver does not reside on the same subnet as the attacking host, DNSForge can be configured to perform ARP spoofing against the subnet gateway (either by explicitly supplying the gateway IP as a spoofing target or automatically when a target IP outside the selected interface's subnet is supplied). Since this action can perform denial-of-service against victim clients on the same subnet, DNSForge performs additional checks to verify if IP forwarding is enabled on the attacking host. IP forwarding will ensure that the attacking host acts as the gateway itself and mantains network reliability by forwarding incoming packets to the subnet's gateway IP.
+
+The following command enables IP forwarding on Linux systems: `sudo sysctl -w net.ipv4.ip_forward=1`
+
+Additionally, along with IP forwarding, the following iptables rule is recommended to ensure that only non-DNS traffic is forwarded: `sudo iptables -A FORWARD -i <Interface> -p udp --dport 53 -j DROP`
 
 ## Example (Basic)
 Sample scenario of poisoning DNS requests for WPAD issued by victim host:

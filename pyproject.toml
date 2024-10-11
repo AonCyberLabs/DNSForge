@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dnsforge"
-version = "0.2.0"
+version = "0.2.1"
 description = "DNS Response Forging Tool"
 authors = ["Apurva Goenka <apurva.goenka2@aon.com>"]
 readme = "README.md"
