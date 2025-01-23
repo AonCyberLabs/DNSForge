@@ -18,11 +18,12 @@
 class AttackState:
     arp_cache = {}
     dns_cache = {}
-    authoritative_nameservers = []
+    authoritative_nameserver = []
+    arp_target = set()
 
     @classmethod
-    def get_authoritative_nameservers(self):
-        return self.authoritative_nameservers
+    def get_authoritative_nameserver(self):
+        return self.authoritative_nameserver
 
     @classmethod
     def get_arp_cache(self):
@@ -33,8 +34,12 @@ class AttackState:
         return self.dns_cache
 
     @classmethod
-    def set_authoritative_nameservers(self, authoritative_nameservers):
-        self.authoritative_nameservers = authoritative_nameservers
+    def get_arp_target(self):
+        return self.arp_target
+
+    @classmethod
+    def set_authoritative_nameserver(self, authoritative_nameserver):
+        self.authoritative_nameserver = authoritative_nameserver
 
     @classmethod
     def set_arp_cache(self, key, value):
@@ -43,3 +48,7 @@ class AttackState:
     @classmethod
     def set_dns_cache(self, key, value):
         self.dns_cache[key] = value
+
+    @classmethod
+    def set_arp_target(self, arp_target):
+        self.arp_target = arp_target
